@@ -9,6 +9,9 @@ let sessionStartValue = 0;
 let isListening = false;
 let listeningStartTime = null;
 let listeningSessionStartValue = 0;
+let currentWeekOffset = 0;
+let historicalData = {};
+let listeningData = {};
 
 // Initialize extension
 function init() {
@@ -35,10 +38,6 @@ function init() {
     }).observe(document, { subtree: true, childList: true });
 }
 
-// Add these variables at the top with the others
-let currentWeekOffset = 0;
-let historicalData = {};
-let listeningData = {};
 
 // Add sidebar functionality
 function initializeSidebar() {
@@ -529,14 +528,21 @@ function checkVideoPage() {
             if (isTracking) {
                 stopTracking();
             }
+            if (isListening) {
+                stopListening();
+            }
             lastVideoId = videoId;
             // Wait a bit for video to load
             setTimeout(() => {
                 startTrackingIfVideoPlaying();
             }, 1000);
+        } else {
+            // Same video, check if we should be tracking/listening
+            startTrackingIfVideoPlaying();
         }
     } else {
         stopTracking();
+        stopListening();
     }
 }
 
@@ -562,7 +568,11 @@ function startTrackingIfVideoPlaying() {
 
         // Check current state
         if (!video.paused && video.readyState > 2) {
-            startTracking();
+            if (document.visibilityState === 'visible') {
+                startTracking();
+            } else {
+                startListening();
+            }
         }
     }
 }
@@ -587,10 +597,15 @@ function startTracking() {
         startTime = Date.now();
         isTracking = true;
 
-        // Store the current value when starting a session
-        const today = new Date().toISOString().split('T')[0];
-        sessionStartValue = historicalData[today] || 0;
-        console.log('Started tracking YouTube at', new Date().toLocaleTimeString(), 'with base value:', formatTime(sessionStartValue));
+        // Load historical data from storage first
+        chrome.storage.local.get(['historicalData'], function (result) {
+            historicalData = result.historicalData || {};
+            
+            // Store the current value when starting a session
+            const today = new Date().toISOString().split('T')[0];
+            sessionStartValue = historicalData[today] || 0;
+            console.log('Started tracking YouTube at', new Date().toLocaleTimeString(), 'with base value:', formatTime(sessionStartValue));
+        });
 
         // Check periodically if tab is still visible (not if window is focused)
         if (checkInterval) clearInterval(checkInterval);
@@ -611,10 +626,23 @@ function startListening() {
         listeningStartTime = Date.now();
         isListening = true;
 
-        // Store the current value when starting a session
-        const today = new Date().toISOString().split('T')[0];
-        listeningSessionStartValue = listeningData[today] || 0;
-        console.log('Started background listening at', new Date().toLocaleTimeString());
+        // Load listening data from storage first
+        chrome.storage.local.get(['listeningData'], function (result) {
+            listeningData = result.listeningData || {};
+            
+            // Store the current value when starting a session
+            const today = new Date().toISOString().split('T')[0];
+            listeningSessionStartValue = listeningData[today] || 0;
+            console.log('Started background listening at', new Date().toLocaleTimeString(), 'with base value:', formatTime(listeningSessionStartValue));
+            
+            // Debug: Check if video is actually playing
+            const video = document.querySelector('video');
+            if (video) {
+                console.log('Video state - paused:', video.paused, 'readyState:', video.readyState, 'ended:', video.ended);
+            }
+        });
+    } else {
+        console.log('Already listening, skipping start');
     }
 }
 
@@ -663,7 +691,7 @@ function saveWatchTime(duration) {
     console.log(`Saving ${seconds} seconds (${minutes.toFixed(2)} minutes) of watch time for ${today}`);
 
     chrome.storage.local.get(['historicalData'], function (result) {
-        const historicalData = result.historicalData || {};
+        historicalData = result.historicalData || {};
         historicalData[today] = (historicalData[today] || 0) + minutes;
 
         chrome.storage.local.set({
@@ -692,7 +720,7 @@ function saveListeningTime(duration) {
     console.log(`Saving ${seconds} seconds (${minutes.toFixed(2)} minutes) of listening time for ${today}`);
 
     chrome.storage.local.get(['listeningData'], function (result) {
-        const listeningData = result.listeningData || {};
+        listeningData = result.listeningData || {};
         listeningData[today] = (listeningData[today] || 0) + minutes;
 
         chrome.storage.local.set({
@@ -708,6 +736,7 @@ function saveListeningTime(duration) {
 
 // Listen for visibility changes (tab switching, not window focus)
 document.addEventListener('visibilitychange', () => {
+    console.log('Visibility changed to:', document.visibilityState);
     if (document.visibilityState === 'visible') {
         // Stop listening when tab becomes visible
         stopListening();
@@ -724,8 +753,24 @@ document.addEventListener('visibilitychange', () => {
     }
 });
 
-// Remove the window focus/blur listeners - we want to track even when window loses focus
-// Only stop tracking when tab is actually hidden
+// Listen for window blur/focus for browser minimize
+window.addEventListener('blur', () => {
+    console.log('Window lost focus');
+    // Only switch to listening if we're currently tracking and video is playing
+    if (isTracking && isVideoPlaying()) {
+        stopTracking();
+        startListening();
+    }
+});
+
+window.addEventListener('focus', () => {
+    console.log('Window gained focus');
+    // Only switch back to tracking if tab is visible and video is playing
+    if (document.visibilityState === 'visible' && isVideoPlaying()) {
+        stopListening();
+        startTracking();
+    }
+});
 
 // Track when page is about to unload
 window.addEventListener('beforeunload', () => {
