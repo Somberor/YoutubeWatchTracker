@@ -1,0 +1,31 @@
+{
+    "manifest_version": 3,
+    "name": "YouTube Watch Time Tracker",
+    "version": "2.0",
+    "description": "Tracks active time spent watching YouTube videos with full historical data",
+    "permissions": [
+        "storage",
+        "tabs",
+        "activeTab"
+    ],
+    "host_permissions": [
+        "*://*.youtube.com/*"
+    ],
+    "background": {
+        "service_worker": "background.js"
+    },
+    "content_scripts": [
+        {
+            "matches": [
+                "*://*.youtube.com/*"
+            ],
+            "js": [
+                "content.js"
+            ],
+            "css": [
+                "sidebar.css"
+            ]
+        }
+    ],
+    "web_accessible_resources": []
+}

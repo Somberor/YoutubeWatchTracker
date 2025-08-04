@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <style>
+    body {
+      width: 300px;
+      padding: 10px;
+      font-family: Arial, sans-serif;
+    }
+    .stats {
+      margin: 10px 0;
+    }
+    .graph-container {
+      margin: 20px 0;
+      padding: 10px;
+      background: #f5f5f5;
+      border-radius: 4px;
+    }
+    .bar {
+      transition: height 0.3s ease;
+    }
+    .bar-label {
+      font-size: 10px;
+    }
+    .tooltip {
+      position: absolute;
+      background: rgba(0, 0, 0, 0.8);
+      color: white;
+      padding: 4px 8px;
+      border-radius: 4px;
+      font-size: 12px;
+      display: none;
+    }
+  </style>
+</head>
+<body>
+  <h3>YouTube Watch Time</h3>
+  <div class="stats">
+    <p>Today: <span id="today">0</span> minutes</p>
+    <p>This week: <span id="week">0</span> minutes</p>
+    <p>Total: <span id="total">0</span> minutes</p>
+  </div>
+  <div class="graph-container">
+    <h4>Weekly Activity</h4>
+    <div id="tooltip" class="tooltip"></div>
+    <svg id="graph" width="280" height="150"></svg>
+  </div>
+  <button id="reset">Reset Statistics</button>
+  <script src="popup.js"></script>
+</body>
+</html>
