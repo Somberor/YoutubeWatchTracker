@@ -6,6 +6,9 @@ let toggleButton = null;
 let checkInterval = null;
 let lastVideoId = null;
 let sessionStartValue = 0;
+let isListening = false;
+let listeningStartTime = null;
+let listeningSessionStartValue = 0;
 
 // Initialize extension
 function init() {
@@ -13,13 +16,12 @@ function init() {
     createSidebar();
 
     // Load historical data first, then start tracking
-    chrome.storage.local.get(['historicalData'], function (result) {
+    chrome.storage.local.get(['historicalData', 'listeningData'], function (result) {
         historicalData = result.historicalData || {};
+        listeningData = result.listeningData || {};
 
-        // Start tracking after data is loaded
-        if (document.visibilityState === 'visible') {
-            startTracking();
-        }
+        // Check if we're on a video page and set up tracking
+        checkVideoPage();
     });
 
     // Monitor URL changes (YouTube is a SPA)
@@ -28,7 +30,7 @@ function init() {
         const url = location.href;
         if (url !== lastUrl) {
             lastUrl = url;
-            // Don't need to check video page anymore
+            checkVideoPage();
         }
     }).observe(document, { subtree: true, childList: true });
 }
@@ -36,6 +38,7 @@ function init() {
 // Add these variables at the top with the others
 let currentWeekOffset = 0;
 let historicalData = {};
+let listeningData = {};
 
 // Add sidebar functionality
 function initializeSidebar() {
@@ -57,22 +60,34 @@ function initializeSidebar() {
 
     // Debug button
     document.getElementById('debugData').addEventListener('click', () => {
-        chrome.storage.local.get(['historicalData'], function (result) {
-            const data = result.historicalData || {};
-            const sortedDates = Object.keys(data).sort().reverse();
-            let output = 'Watch Time Data:\n\n';
+        chrome.storage.local.get(['historicalData', 'listeningData'], function (result) {
+            const watchData = result.historicalData || {};
+            const listenData = result.listeningData || {};
+            const allDates = [...new Set([...Object.keys(watchData), ...Object.keys(listenData)])].sort().reverse();
+            let output = 'YouTube Activity Data:\n\n';
 
-            let totalMinutes = 0;
-            sortedDates.forEach(date => {
-                output += `${date}: ${formatTime(data[date])}\n`;
-                totalMinutes += data[date];
+            let totalWatchMinutes = 0;
+            let totalListenMinutes = 0;
+            
+            output += 'Date | Watch Time | Listening Time\n';
+            output += '--------------------------------\n';
+            
+            allDates.forEach(date => {
+                const watchTime = watchData[date] || 0;
+                const listenTime = listenData[date] || 0;
+                output += `${date}: ${formatTime(watchTime)} | ${formatTime(listenTime)}\n`;
+                totalWatchMinutes += watchTime;
+                totalListenMinutes += listenTime;
             });
 
-            output += `\nTotal Days Tracked: ${sortedDates.length}`;
-            output += `\nTotal Time: ${formatTime(totalMinutes)}`;
+            output += `\nTotal Days Tracked: ${allDates.length}`;
+            output += `\nTotal Watch Time: ${formatTime(totalWatchMinutes)}`;
+            output += `\nTotal Listening Time: ${formatTime(totalListenMinutes)}`;
+            output += `\nCombined Total: ${formatTime(totalWatchMinutes + totalListenMinutes)}`;
 
             console.log(output);
-            console.log('Raw data object:', data);
+            console.log('Watch data:', watchData);
+            console.log('Listening data:', listenData);
             alert(output);
         });
     });
@@ -89,9 +104,10 @@ function initializeSidebar() {
         const sidebar = document.getElementById('yt-watch-time-sidebar');
         if (sidebar && !sidebar.classList.contains('hidden')) {
             // Only update stats, not the graph (to preserve hover functionality)
-            chrome.storage.local.get(['historicalData'], function (result) {
+            chrome.storage.local.get(['historicalData', 'listeningData'], function (result) {
                 historicalData = result.historicalData || {};
-                if (!isTracking) {
+                listeningData = result.listeningData || {};
+                if (!isTracking && !isListening) {
                     updateStats();
                 }
                 // Don't call updateGraph() here to avoid disrupting tooltips
@@ -101,12 +117,13 @@ function initializeSidebar() {
 }
 
 function loadData() {
-    chrome.storage.local.get(['historicalData'], function (result) {
+    chrome.storage.local.get(['historicalData', 'listeningData'], function (result) {
         historicalData = result.historicalData || {};
+        listeningData = result.listeningData || {};
 
         // Only update stats if not currently tracking
         // If tracking, the live update will handle it
-        if (!isTracking) {
+        if (!isTracking && !isListening) {
             updateStats();
         }
 
@@ -116,9 +133,10 @@ function loadData() {
 
 // Separate function to update only stats without redrawing the graph
 function updateStatsOnly() {
-    chrome.storage.local.get(['historicalData'], function (result) {
+    chrome.storage.local.get(['historicalData', 'listeningData'], function (result) {
         historicalData = result.historicalData || {};
-        if (!isTracking) {
+        listeningData = result.listeningData || {};
+        if (!isTracking && !isListening) {
             updateStats();
         }
     });
@@ -162,9 +180,11 @@ function formatTime(minutes) {
 function updateStats() {
     const today = new Date().toISOString().split('T')[0];
     const todayData = historicalData[today] || 0;
+    const todayListeningData = listeningData[today] || 0;
 
     // Calculate week total
     let weekTotal = 0;
+    let weekListeningTotal = 0;
     const now = new Date();
     const startOfWeek = new Date(now);
     startOfWeek.setDate(now.getDate() - now.getDay());
@@ -174,26 +194,36 @@ function updateStats() {
         date.setDate(startOfWeek.getDate() + i);
         const dateStr = date.toISOString().split('T')[0];
         weekTotal += historicalData[dateStr] || 0;
+        weekListeningTotal += listeningData[dateStr] || 0;
     }
 
     // Calculate month total
     let monthTotal = 0;
+    let monthListeningTotal = 0;
     const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
     const endOfMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0);
 
     for (let d = new Date(startOfMonth); d <= endOfMonth; d.setDate(d.getDate() + 1)) {
         const dateStr = d.toISOString().split('T')[0];
         monthTotal += historicalData[dateStr] || 0;
+        monthListeningTotal += listeningData[dateStr] || 0;
     }
 
     // Calculate all-time total
     const allTimeTotal = Object.values(historicalData).reduce((sum, val) => sum + val, 0);
+    const allTimeListeningTotal = Object.values(listeningData).reduce((sum, val) => sum + val, 0);
 
     // Update display
     document.getElementById('todayTime').textContent = formatTime(todayData);
     document.getElementById('weekTime').textContent = formatTime(weekTotal);
     document.getElementById('monthTime').textContent = formatTime(monthTotal);
     document.getElementById('totalTime').textContent = formatTime(allTimeTotal);
+    
+    // Update listening stats
+    document.getElementById('todayListening').textContent = formatTime(todayListeningData);
+    document.getElementById('weekListening').textContent = formatTime(weekListeningTotal);
+    document.getElementById('monthListening').textContent = formatTime(monthListeningTotal);
+    document.getElementById('totalListening').textContent = formatTime(allTimeListeningTotal);
 }
 
 function updateGraph() {
@@ -408,6 +438,28 @@ function createSidebar() {
       </div>
     </div>
     
+    <div class="listening-stats-container" style="margin-top: 16px;">
+      <h4 style="color: var(--yt-spec-text-secondary); font-size: 12px; margin-bottom: 8px; text-transform: uppercase;">🎧 Background Listening</h4>
+      <div class="stats-container">
+        <div class="stat-card">
+          <div class="stat-label">Today</div>
+          <div class="stat-value" id="todayListening">0m</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">This Week</div>
+          <div class="stat-value" id="weekListening">0m</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">This Month</div>
+          <div class="stat-value" id="monthListening">0m</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">All Time</div>
+          <div class="stat-value" id="totalListening">0m</div>
+        </div>
+      </div>
+    </div>
+    
     <div class="graph-container">
       <div class="graph-controls">
         <button class="nav-btn" id="prevWeek">
@@ -517,12 +569,17 @@ function startTrackingIfVideoPlaying() {
 
 function handleVideoPlay() {
     console.log('Video playing, starting tracking');
-    startTracking();
+    if (document.visibilityState === 'visible') {
+        startTracking();
+    } else {
+        startListening();
+    }
 }
 
 function handleVideoPause() {
     console.log('Video paused/ended, stopping tracking');
     stopTracking();
+    stopListening();
 }
 
 function startTracking() {
@@ -540,8 +597,37 @@ function startTracking() {
         checkInterval = setInterval(() => {
             if (document.visibilityState !== 'visible') {
                 stopTracking();
+                // Start listening mode when tab becomes hidden
+                if (isVideoPlaying()) {
+                    startListening();
+                }
             }
         }, 1000);
+    }
+}
+
+function startListening() {
+    if (!isListening) {
+        listeningStartTime = Date.now();
+        isListening = true;
+
+        // Store the current value when starting a session
+        const today = new Date().toISOString().split('T')[0];
+        listeningSessionStartValue = listeningData[today] || 0;
+        console.log('Started background listening at', new Date().toLocaleTimeString());
+    }
+}
+
+function stopListening() {
+    if (isListening && listeningStartTime) {
+        const duration = Date.now() - listeningStartTime;
+        if (duration > 1000) { // Only save if more than 1 second
+            saveListeningTime(duration);
+        }
+
+        isListening = false;
+        listeningStartTime = null;
+        console.log('Stopped background listening at', new Date().toLocaleTimeString());
     }
 }
 
@@ -598,12 +684,43 @@ function saveWatchTime(duration) {
     });
 }
 
+function saveListeningTime(duration) {
+    const minutes = duration / 60000; // Convert to minutes
+    const seconds = Math.round(duration / 1000); // Also log seconds for debugging
+    const today = new Date().toISOString().split('T')[0];
+
+    console.log(`Saving ${seconds} seconds (${minutes.toFixed(2)} minutes) of listening time for ${today}`);
+
+    chrome.storage.local.get(['listeningData'], function (result) {
+        const listeningData = result.listeningData || {};
+        listeningData[today] = (listeningData[today] || 0) + minutes;
+
+        chrome.storage.local.set({
+            listeningData: listeningData,
+            lastListeningUpdate: Date.now()
+        }, () => {
+            // Update our session start value to the new total
+            listeningSessionStartValue = listeningData[today];
+            console.log(`Successfully saved. Total listening for ${today}: ${formatTime(listeningData[today])}`);
+        });
+    });
+}
+
 // Listen for visibility changes (tab switching, not window focus)
 document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible') {
-        startTracking();
+        // Stop listening when tab becomes visible
+        stopListening();
+        // Check if video is playing and start tracking
+        if (isVideoPlaying()) {
+            startTracking();
+        }
     } else {
         stopTracking();
+        // Start listening if video is playing
+        if (isVideoPlaying()) {
+            startListening();
+        }
     }
 });
 
@@ -613,6 +730,7 @@ document.addEventListener('visibilitychange', () => {
 // Track when page is about to unload
 window.addEventListener('beforeunload', () => {
     stopTracking();
+    stopListening();
 });
 
 // Update stats every minute while tracking
@@ -623,6 +741,15 @@ setInterval(() => {
             saveWatchTime(duration);
             // Reset start time to avoid counting the same time twice
             startTime = Date.now();
+        }
+    }
+    
+    if (isListening && listeningStartTime) {
+        const duration = Date.now() - listeningStartTime;
+        if (duration > 1000) { // Only save if more than 1 second
+            saveListeningTime(duration);
+            // Reset start time to avoid counting the same time twice
+            listeningStartTime = Date.now();
         }
     }
 }, 60000); // Update every minute
@@ -698,6 +825,68 @@ function startLiveUpdates() {
                 if (weekElement) weekElement.textContent = formatTime(weekTotal);
                 if (monthElement) monthElement.textContent = formatTime(monthTotal);
                 if (totalElement) totalElement.textContent = formatTime(allTimeTotal);
+            }
+            
+            // Update listening stats if listening
+            if (isListening && listeningStartTime) {
+                // Calculate current listening session duration
+                const currentListeningDuration = Date.now() - listeningStartTime;
+                const currentListeningMinutes = currentListeningDuration / 60000;
+
+                // Update today's listening display
+                const todayListeningElement = document.getElementById('todayListening');
+                if (todayListeningElement) {
+                    const totalTodayListening = listeningSessionStartValue + currentListeningMinutes;
+                    todayListeningElement.textContent = formatTime(totalTodayListening);
+                }
+
+                // Similar calculations for week, month, and all-time listening
+                const today = new Date().toISOString().split('T')[0];
+                const now = new Date();
+                const startOfWeek = new Date(now);
+                startOfWeek.setDate(now.getDate() - now.getDay());
+                const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+                const endOfMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+                
+                let weekListeningTotal = currentListeningMinutes;
+                let monthListeningTotal = currentListeningMinutes;
+                let allTimeListeningTotal = currentListeningMinutes + listeningSessionStartValue;
+
+                // Calculate totals
+                for (let i = 0; i < 7; i++) {
+                    const date = new Date(startOfWeek);
+                    date.setDate(startOfWeek.getDate() + i);
+                    const dateStr = date.toISOString().split('T')[0];
+                    if (dateStr === today) {
+                        weekListeningTotal += listeningSessionStartValue;
+                    } else {
+                        weekListeningTotal += listeningData[dateStr] || 0;
+                    }
+                }
+
+                for (let d = new Date(startOfMonth); d <= endOfMonth; d.setDate(d.getDate() + 1)) {
+                    const dateStr = d.toISOString().split('T')[0];
+                    if (dateStr === today) {
+                        monthListeningTotal += listeningSessionStartValue;
+                    } else {
+                        monthListeningTotal += listeningData[dateStr] || 0;
+                    }
+                }
+
+                for (const [date, value] of Object.entries(listeningData)) {
+                    if (date !== today) {
+                        allTimeListeningTotal += value;
+                    }
+                }
+
+                // Update listening displays
+                const weekListeningElement = document.getElementById('weekListening');
+                const monthListeningElement = document.getElementById('monthListening');
+                const totalListeningElement = document.getElementById('totalListening');
+
+                if (weekListeningElement) weekListeningElement.textContent = formatTime(weekListeningTotal);
+                if (monthListeningElement) monthListeningElement.textContent = formatTime(monthListeningTotal);
+                if (totalListeningElement) totalListeningElement.textContent = formatTime(allTimeListeningTotal);
             }
         }
     }, 1000); // Update every second
