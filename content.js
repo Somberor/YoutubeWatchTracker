@@ -24,7 +24,10 @@ function init() {
         listeningData = result.listeningData || {};
 
         // Check if we're on a video page and set up tracking
-        checkVideoPage();
+        // Add a small delay to ensure the video element is loaded
+        setTimeout(() => {
+            checkVideoPage();
+        }, 1000);
     });
 
     // Monitor URL changes (YouTube is a SPA)
@@ -36,6 +39,9 @@ function init() {
             checkVideoPage();
         }
     }).observe(document, { subtree: true, childList: true });
+
+    // Start the periodic save interval immediately
+    startPeriodicSave();
 }
 
 
@@ -518,10 +524,12 @@ function toggleSidebar() {
 
 function checkVideoPage() {
     const isVideoPage = window.location.pathname === '/watch';
+    console.log('Checking video page, isVideoPage:', isVideoPage, 'URL:', window.location.pathname);
 
     if (isVideoPage) {
         const urlParams = new URLSearchParams(window.location.search);
         const videoId = urlParams.get('v');
+        console.log('Video ID:', videoId, 'Last Video ID:', lastVideoId);
 
         if (videoId !== lastVideoId) {
             // New video, restart tracking
@@ -534,10 +542,12 @@ function checkVideoPage() {
             lastVideoId = videoId;
             // Wait a bit for video to load
             setTimeout(() => {
+                console.log('Attempting to start tracking for video:', videoId);
                 startTrackingIfVideoPlaying();
             }, 1000);
         } else {
             // Same video, check if we should be tracking/listening
+            console.log('Same video, checking if should track');
             startTrackingIfVideoPlaying();
         }
     } else {
@@ -547,6 +557,8 @@ function checkVideoPage() {
 }
 
 function startTrackingIfVideoPlaying() {
+    console.log('startTrackingIfVideoPlaying called');
+    
     // Remove old listeners first to avoid duplicates
     const oldVideo = document.querySelector('video.yt-tracking-attached');
     if (oldVideo) {
@@ -558,6 +570,8 @@ function startTrackingIfVideoPlaying() {
 
     const video = document.querySelector('video');
     if (video) {
+        console.log('Video found, paused:', video.paused, 'readyState:', video.readyState);
+        
         // Mark this video as having listeners attached
         video.classList.add('yt-tracking-attached');
 
@@ -568,12 +582,19 @@ function startTrackingIfVideoPlaying() {
 
         // Check current state
         if (!video.paused && video.readyState > 2) {
+            console.log('Video is playing, checking visibility');
             if (document.visibilityState === 'visible') {
+                console.log('Tab is visible, starting tracking');
                 startTracking();
             } else {
+                console.log('Tab is hidden, starting listening');
                 startListening();
             }
+        } else {
+            console.log('Video is not playing or not ready');
         }
+    } else {
+        console.log('No video element found');
     }
 }
 
@@ -778,26 +799,29 @@ window.addEventListener('beforeunload', () => {
     stopListening();
 });
 
-// Update stats every minute while tracking
-setInterval(() => {
-    if (isTracking && startTime) {
-        const duration = Date.now() - startTime;
-        if (duration > 1000) { // Only save if more than 1 second
-            saveWatchTime(duration);
-            // Reset start time to avoid counting the same time twice
-            startTime = Date.now();
+// Function to start periodic save interval
+function startPeriodicSave() {
+    // Update stats every minute while tracking
+    setInterval(() => {
+        if (isTracking && startTime) {
+            const duration = Date.now() - startTime;
+            if (duration > 1000) { // Only save if more than 1 second
+                saveWatchTime(duration);
+                // Reset start time to avoid counting the same time twice
+                startTime = Date.now();
+            }
         }
-    }
-    
-    if (isListening && listeningStartTime) {
-        const duration = Date.now() - listeningStartTime;
-        if (duration > 1000) { // Only save if more than 1 second
-            saveListeningTime(duration);
-            // Reset start time to avoid counting the same time twice
-            listeningStartTime = Date.now();
+        
+        if (isListening && listeningStartTime) {
+            const duration = Date.now() - listeningStartTime;
+            if (duration > 1000) { // Only save if more than 1 second
+                saveListeningTime(duration);
+                // Reset start time to avoid counting the same time twice
+                listeningStartTime = Date.now();
+            }
         }
-    }
-}, 60000); // Update every minute
+    }, 60000); // Update every minute
+}
 
 // Live update display while tracking
 let liveUpdateInterval = null;
