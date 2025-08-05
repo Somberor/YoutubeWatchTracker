@@ -42,6 +42,21 @@ function init() {
 
     // Start the periodic save interval immediately
     startPeriodicSave();
+    
+    // Also monitor for video element changes
+    const videoObserver = new MutationObserver(() => {
+        const video = document.querySelector('video');
+        if (video && !video.classList.contains('yt-tracking-attached')) {
+            console.log('New video element detected, setting up tracking');
+            checkVideoPage();
+        }
+    });
+    
+    // Observe the body for video elements being added/changed
+    videoObserver.observe(document.body, {
+        childList: true,
+        subtree: true
+    });
 }
 
 
@@ -253,7 +268,7 @@ function updateGraph() {
     // Enable/disable navigation buttons
     document.getElementById('nextWeek').disabled = currentWeekOffset === 0;
 
-    // Collect data for the week
+    // Collect data for the week including both watch and listening time
     const weekData = [];
     for (let i = 0; i < 7; i++) {
         const date = new Date(startDate);
@@ -262,7 +277,8 @@ function updateGraph() {
         weekData.push({
             date: date,
             dateStr: dateStr,
-            value: historicalData[dateStr] || 0
+            value: historicalData[dateStr] || 0,
+            listeningValue: listeningData[dateStr] || 0
         });
     }
 
@@ -272,8 +288,8 @@ function updateGraph() {
     svg.setAttribute('height', height);
     svg.setAttribute('viewBox', `0 0 ${width} ${height}`);
 
-    // Find max value for scaling
-    const maxValue = Math.max(...weekData.map(d => d.value), 1);
+    // Find max value for scaling (consider both watch and listening time)
+    const maxValue = Math.max(...weekData.map(d => d.value + d.listeningValue), 1);
     const scale = (height - padding.top - padding.bottom) / maxValue;
     const barWidth = (width - padding.left - padding.right) / 7 - 4;
 
@@ -305,11 +321,15 @@ function updateGraph() {
     // Function to show tooltip
     const showTooltip = (e, data) => {
         const dateOptions = { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' };
-        const timeSpent = data.value > 0 ? formatTime(data.value) : 'No time tracked';
+        const watchTime = data.value > 0 ? formatTime(data.value) : '0m';
+        const listenTime = data.listeningValue > 0 ? formatTime(data.listeningValue) : '0m';
+        const totalTime = formatTime(data.value + data.listeningValue);
 
         tooltip.innerHTML = `
             <div style="font-weight: 600; margin-bottom: 4px;">${data.date.toLocaleDateString('en-US', dateOptions)}</div>
-            <div style="color: #ff4444;">${timeSpent}</div>
+            <div style="color: #ff4444;">Watch: ${watchTime}</div>
+            <div style="color: #ff9933;">Listen: ${listenTime}</div>
+            <div style="color: #fff; margin-top: 4px; padding-top: 4px; border-top: 1px solid rgba(255,255,255,0.2);">Total: ${totalTime}</div>
         `;
 
         // Show tooltip
@@ -343,44 +363,73 @@ function updateGraph() {
     // Create bars
     weekData.forEach((data, i) => {
         const x = padding.left + i * ((width - padding.left - padding.right) / 7) + 2;
-        const barHeight = data.value * scale;
-        const y = height - padding.bottom - barHeight;
-
+        const watchBarHeight = data.value * scale;
+        const listeningBarHeight = data.listeningValue * scale;
+        const totalBarHeight = watchBarHeight + listeningBarHeight;
+        
         // Bar group
         const g = document.createElementNS('http://www.w3.org/2000/svg', 'g');
 
-        // Bar
-        const bar = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
-        bar.setAttribute('x', x);
-        bar.setAttribute('y', y);
-        bar.setAttribute('width', barWidth);
-        bar.setAttribute('height', barHeight);
-        bar.setAttribute('fill', data.date.toDateString() === now.toDateString() ? '#ff0000' : '#cc0000');
-        bar.setAttribute('rx', '2');
-        bar.style.cursor = 'pointer';
-        bar.style.opacity = '0.9';
+        // Watch time bar (bottom/primary)
+        const watchBar = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+        watchBar.setAttribute('x', x);
+        watchBar.setAttribute('y', height - padding.bottom - watchBarHeight);
+        watchBar.setAttribute('width', barWidth);
+        watchBar.setAttribute('height', watchBarHeight);
+        watchBar.setAttribute('fill', data.date.toDateString() === now.toDateString() ? '#ff0000' : '#cc0000');
+        watchBar.setAttribute('rx', '2');
+        watchBar.style.cursor = 'pointer';
+        watchBar.style.opacity = '0.9';
+        
+        // Listening time bar (stacked on top)
+        const listeningBar = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+        listeningBar.setAttribute('x', x);
+        listeningBar.setAttribute('y', height - padding.bottom - totalBarHeight);
+        listeningBar.setAttribute('width', barWidth);
+        listeningBar.setAttribute('height', listeningBarHeight);
+        listeningBar.setAttribute('fill', data.date.toDateString() === now.toDateString() ? '#ff8c00' : '#ff9933');
+        listeningBar.setAttribute('rx', '2');
+        listeningBar.style.cursor = 'pointer';
+        listeningBar.style.opacity = '0.9';
 
-        // Store data on element for event handlers
-        bar._data = data;
+        // Store data on elements for event handlers
+        watchBar._data = data;
+        listeningBar._data = data;
+        
+        // Create an invisible overlay rect for hover detection
+        const overlayBar = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+        overlayBar.setAttribute('x', x);
+        overlayBar.setAttribute('y', height - padding.bottom - totalBarHeight);
+        overlayBar.setAttribute('width', barWidth);
+        overlayBar.setAttribute('height', totalBarHeight);
+        overlayBar.setAttribute('fill', 'transparent');
+        overlayBar.style.cursor = 'pointer';
+        overlayBar._data = data;
 
         // Prevent click from interfering with hover
-        bar.addEventListener('click', (e) => {
+        overlayBar.addEventListener('click', (e) => {
             e.preventDefault();
             e.stopPropagation();
         });
 
         // Hover effects
-        bar.addEventListener('mouseenter', function (e) {
-            this.style.opacity = '1';
+        overlayBar.addEventListener('mouseenter', function (e) {
+            watchBar.style.opacity = '1';
+            listeningBar.style.opacity = '1';
             showTooltip(e, this._data);
         });
 
-        bar.addEventListener('mouseleave', function () {
-            this.style.opacity = '0.9';
+        overlayBar.addEventListener('mouseleave', function () {
+            watchBar.style.opacity = '0.9';
+            listeningBar.style.opacity = '0.9';
             hideTooltip();
         });
 
-        g.appendChild(bar);
+        g.appendChild(watchBar);
+        if (listeningBarHeight > 0) {
+            g.appendChild(listeningBar);
+        }
+        g.appendChild(overlayBar);
 
         // Date label
         const text = document.createElementNS('http://www.w3.org/2000/svg', 'text');
@@ -565,6 +614,7 @@ function startTrackingIfVideoPlaying() {
         oldVideo.removeEventListener('play', handleVideoPlay);
         oldVideo.removeEventListener('pause', handleVideoPause);
         oldVideo.removeEventListener('ended', handleVideoPause);
+        oldVideo.removeEventListener('timeupdate', handleVideoTimeUpdate);
         oldVideo.classList.remove('yt-tracking-attached');
     }
 
@@ -579,6 +629,26 @@ function startTrackingIfVideoPlaying() {
         video.addEventListener('play', handleVideoPlay);
         video.addEventListener('pause', handleVideoPause);
         video.addEventListener('ended', handleVideoPause);
+        
+        // Add timeupdate listener to ensure we're tracking even if play event was missed
+        let lastTimeUpdateCheck = 0;
+        const handleVideoTimeUpdate = () => {
+            const now = Date.now();
+            // Only check every 5 seconds to avoid performance issues
+            if (now - lastTimeUpdateCheck > 5000) {
+                lastTimeUpdateCheck = now;
+                if (!video.paused && video.readyState > 2) {
+                    if (document.visibilityState === 'visible' && !isTracking) {
+                        console.log('Video playing detected via timeupdate, starting tracking');
+                        startTracking();
+                    } else if (document.visibilityState !== 'visible' && !isListening) {
+                        console.log('Video playing detected via timeupdate, starting listening');
+                        startListening();
+                    }
+                }
+            }
+        };
+        video.addEventListener('timeupdate', handleVideoTimeUpdate);
 
         // Check current state
         if (!video.paused && video.readyState > 2) {
@@ -592,9 +662,29 @@ function startTrackingIfVideoPlaying() {
             }
         } else {
             console.log('Video is not playing or not ready');
+            // Set up a retry mechanism for videos that aren't ready yet
+            setTimeout(() => {
+                const video = document.querySelector('video');
+                if (video && !video.paused && video.readyState > 2) {
+                    console.log('Video ready on retry');
+                    if (document.visibilityState === 'visible' && !isTracking) {
+                        startTracking();
+                    } else if (document.visibilityState !== 'visible' && !isListening) {
+                        startListening();
+                    }
+                }
+            }, 2000);
         }
     } else {
-        console.log('No video element found');
+        console.log('No video element found, will retry');
+        // Retry after a delay if video element not found yet
+        setTimeout(() => {
+            const video = document.querySelector('video');
+            if (video) {
+                console.log('Video found on retry');
+                startTrackingIfVideoPlaying();
+            }
+        }, 1500);
     }
 }
 
@@ -615,6 +705,13 @@ function handleVideoPause() {
 
 function startTracking() {
     if (!isTracking && document.visibilityState === 'visible') {
+        // Double check video is actually playing
+        const video = document.querySelector('video');
+        if (!video || video.paused) {
+            console.log('Video not playing, not starting tracking');
+            return;
+        }
+        
         startTime = Date.now();
         isTracking = true;
 
@@ -631,7 +728,11 @@ function startTracking() {
         // Check periodically if tab is still visible (not if window is focused)
         if (checkInterval) clearInterval(checkInterval);
         checkInterval = setInterval(() => {
-            if (document.visibilityState !== 'visible') {
+            // Also check if video is still playing
+            const video = document.querySelector('video');
+            if (!video || video.paused) {
+                stopTracking();
+            } else if (document.visibilityState !== 'visible') {
                 stopTracking();
                 // Start listening mode when tab becomes hidden
                 if (isVideoPlaying()) {
@@ -644,6 +745,13 @@ function startTracking() {
 
 function startListening() {
     if (!isListening) {
+        // Double check video is actually playing
+        const video = document.querySelector('video');
+        if (!video || video.paused) {
+            console.log('Video not playing, not starting listening');
+            return;
+        }
+        
         listeningStartTime = Date.now();
         isListening = true;
 
@@ -662,6 +770,19 @@ function startListening() {
                 console.log('Video state - paused:', video.paused, 'readyState:', video.readyState, 'ended:', video.ended);
             }
         });
+        
+        // Check periodically if video is still playing
+        if (!checkInterval) {
+            checkInterval = setInterval(() => {
+                const video = document.querySelector('video');
+                if (!video || video.paused) {
+                    stopListening();
+                } else if (document.visibilityState === 'visible') {
+                    stopListening();
+                    startTracking();
+                }
+            }, 1000);
+        }
     } else {
         console.log('Already listening, skipping start');
     }
